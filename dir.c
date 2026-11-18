@@ -81,7 +81,9 @@ char *strchr(char*,char);
 #define USE_NAME_ON_FS_BY_FNMATCH 2	/* select the matching
 					 * basename by fnmatch */
 
-#ifdef HAVE_GETATTRLIST
+/* QuestPlay iOS support: this getattrlist path decodes vnode types
+ * (VREG/VDIR/VLNK) from sys/vnode.h, which the iOS SDK does not ship. */
+#if defined HAVE_GETATTRLIST && __has_include(<sys/vnode.h>)
 # define USE_NAME_ON_FS USE_NAME_ON_FS_REAL_BASENAME
 # define RUP32(size) ((size)+3/4)
 # define SIZEUP32(type) RUP32(sizeof(type))
@@ -93,7 +95,10 @@ char *strchr(char*,char);
 # define USE_NAME_ON_FS 0
 #endif
 
-#ifdef __APPLE__
+/* QuestPlay iOS support: sys/vnode.h is absent from the iOS SDK, and HFS
+ * path normalization is a macOS-only concern (iOS is APFS). The generic
+ * path handling is used there instead. */
+#if defined(__APPLE__) && __has_include(<sys/vnode.h>)
 # define NORMALIZE_UTF8PATH 1
 # include <sys/param.h>
 # include <sys/mount.h>
@@ -1753,7 +1758,9 @@ join_path(const char *path, size_t len, int dirsep, const char *name, size_t nam
     return buf;
 }
 
-#ifdef HAVE_GETATTRLIST
+/* QuestPlay iOS support: this implementation block decodes vnode types
+ * (VREG/VDIR/VLNK) from sys/vnode.h, which the iOS SDK does not ship. */
+#if defined HAVE_GETATTRLIST && __has_include(<sys/vnode.h>)
 # if defined HAVE_FGETATTRLIST
 #   define is_case_sensitive(dirp, path) is_case_sensitive(dirp)
 # else
@@ -2402,7 +2409,9 @@ glob_helper(
 	    goto literally;
 	}
 # endif
-# ifdef HAVE_GETATTRLIST
+/* QuestPlay iOS support: is_case_sensitive is only defined when sys/vnode.h
+ * exists (see above); iOS APFS is case-sensitive, matching the fallthrough. */
+# if defined HAVE_GETATTRLIST && __has_include(<sys/vnode.h>)
 	if (is_case_sensitive(dirp, path) == 0)
 	    flags |= FNM_CASEFOLD;
 # endif
@@ -3320,7 +3329,8 @@ rb_dir_s_empty_p(VALUE obj, VALUE dirname)
     dirname = rb_str_dup_frozen(dirname);
     path = RSTRING_PTR(dirname);
 
-#if defined HAVE_GETATTRLIST && defined ATTR_DIR_ENTRYCOUNT
+/* QuestPlay iOS support: VT_HFS comes from sys/vnode.h (macOS SDK only). */
+#if defined HAVE_GETATTRLIST && defined ATTR_DIR_ENTRYCOUNT && __has_include(<sys/vnode.h>)
     {
 	u_int32_t attrbuf[SIZEUP32(fsobj_tag_t)];
 	struct attrlist al = {ATTR_BIT_MAP_COUNT, 0, ATTR_CMN_OBJTAG,};
