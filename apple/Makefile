@@ -1,19 +1,21 @@
 # apple/Makefile — builds this Ruby (mkxp-z 3.1.3 + QuestPlay patches) for
-# macOS arm64, iOS arm64 (device) and iOS Simulator arm64, and packages the
-# three as Ruby-MKXPZ.xcframework.
+# macOS arm64, iOS arm64 (device) and iOS Simulator arm64, and fills the
+# RubyEmbed Swift package (apple/RubyEmbed) with it: the three as
+# Ruby-MKXPZ.xcframework, plus the Ruby files the interpreter loads at runtime.
 #
-#   make -f apple/Makefile xcframework    # run from the repo root
+#   make -f apple/Makefile                # everything, run from the repo root
 #   make -f apple/Makefile help           # list all targets
 #
 # Ruby's own build system is used unchanged: for each platform we run Ruby's
 # configure in its own build folder, then Ruby's generated Makefile there
 # (recursive make). This file only orchestrates around it and adds the
 # Apple-specific steps: one merged embeddable archive per platform, staged
-# headers, smoke tests, the xcframework, and the pure-Ruby stdlib export.
+# headers, smoke tests, the xcframework, and the package's Ruby resources.
 #
 # Everything generated goes to build-apple/ (gitignored by Ruby's /build*/
-# rule), except autogen.sh's output (configure, tool/config.*), which Ruby
-# keeps in the source tree and also gitignores.
+# rule) or into the package (gitignored there), except autogen.sh's output
+# (configure, tool/config.*), which Ruby keeps in the source tree and also
+# gitignores.
 #
 # Requires: Xcode; autoconf (Homebrew) for autogen.sh; /usr/bin/ruby as the
 # base Ruby of the macOS build. No network access: this branch's
@@ -54,9 +56,10 @@
 # App-side notes:
 #   - link libz (the zlib extension needs the system zlib) and CoreFoundation
 #     (file.c uses it for path normalization).
-#   - the pure-Ruby stdlib (`make stdlib` → build-apple/ruby-stdlib) must ship
-#     in the app as a folder, put on $LOAD_PATH at boot; without it
-#     yaml/json/date etc. raise LoadError (zlib still works, it is static).
+#   - the pure-Ruby stdlib and this platform's rbconfig.rb ship as RubyEmbed
+#     resources; RubyEmbedLoadPaths() returns their folders, to pass to
+#     ruby_options() as -I. Without them yaml/json/date etc. raise LoadError
+#     (zlib still works, it is static).
 #   - embedders MUST boot via ruby_init() → ruby_options() → ruby_exec_node():
 #     Init_ext (the static extensions) only runs during ruby_options().
 
@@ -109,7 +112,13 @@ SMOKE       := $(OUT)/smoke
 # Written straight into the Swift package (SwiftPM requires a binary target's
 # xcframework to live inside the package folder; gitignored there).
 XCFRAMEWORK := $(APPLE)/RubyEmbed/Ruby-MKXPZ.xcframework
-STDLIB      := $(OUT)/ruby-stdlib
+# The RubyEmbed target's resource folder (generated parts gitignored there).
+RESOURCES   := $(APPLE)/RubyEmbed/Sources/RubyEmbed/ruby
+
+# Parts of the stdlib an embedded game runtime never loads: rubygems is
+# disabled, and these are developer tools (docs, bundler, the irb console).
+STDLIB_EXCLUDE := rdoc rdoc.rb bundler bundler.rb rubygems rubygems.rb \
+                  irb irb.rb reline reline.rb
 
 SMOKE_LIBS := -lz -lpthread -ldl -lobjc -framework CoreFoundation
 
@@ -117,18 +126,18 @@ SMOKE_LIBS := -lz -lpthread -ldl -lobjc -framework CoreFoundation
 # the parallelism happens inside each Ruby build via -j$(JOBS).
 .NOTPARALLEL:
 
-.PHONY: all help xcframework stdlib macos ios sim ruby-macos ruby-ios ruby-sim clean
+.PHONY: all help xcframework resources macos ios sim ruby-macos ruby-ios ruby-sim clean
 
-all: xcframework stdlib
+all: xcframework resources
 
 help:
 	@echo "make -f apple/Makefile <target>"
 	@echo ""
 	@echo "  xcframework  macos + ios + sim slices → $(XCFRAMEWORK)"
-	@echo "  stdlib       pure-Ruby stdlib → $(STDLIB)"
-	@echo "  all          xcframework + stdlib (default)"
+	@echo "  resources    stdlib + per-platform rbconfig.rb → $(RESOURCES)"
+	@echo "  all          xcframework + resources (default)"
 	@echo "  macos | ios | sim   build + merge + headers + smoke-test one slice"
-	@echo "  clean        delete build-apple/ and the package's xcframework"
+	@echo "  clean        delete build-apple/ and everything generated in the package"
 	@echo ""
 	@echo "  variables: JOBS=$(JOBS) BASE_RUBY=$(BASE_RUBY)"
 
@@ -254,16 +263,26 @@ xcframework: macos ios sim
 	rm -rf $(OUT)/staging
 	@echo "    $(XCFRAMEWORK)"
 
-# =================================================================== stdlib
-# Pure-Ruby standard library (platform-independent) for bundling into the app.
+# ================================================================ resources
+# The Ruby files the interpreter loads at runtime, as RubyEmbed resources:
+#   ruby/stdlib/               pure-Ruby standard library (platform-independent,
+#                              from the macOS install), minus STDLIB_EXCLUDE and
+#                              the arch dir (it only holds the macOS rbconfig.rb)
+#   ruby/rbconfig/<platform>/  each platform's rbconfig.rb (RbConfig: platform,
+#                              compiler, paths), from its build tree
 
-stdlib: ruby-macos
-	@echo "==> exporting stdlib"
-	rm -rf $(STDLIB)
-	cp -R $(MAC_INSTALL)/lib/ruby/3.1.0 $(STDLIB)
-	@echo "    $(STDLIB)"
+resources: ruby-macos ruby-ios ruby-sim
+	@echo "==> exporting Ruby resources"
+	rm -rf $(RESOURCES)/stdlib $(RESOURCES)/rbconfig
+	cp -R $(MAC_INSTALL)/lib/ruby/3.1.0 $(RESOURCES)/stdlib
+	cd $(RESOURCES)/stdlib && rm -rf $(STDLIB_EXCLUDE) *-darwin*
+	mkdir -p $(RESOURCES)/rbconfig/macos $(RESOURCES)/rbconfig/ios $(RESOURCES)/rbconfig/ios-simulator
+	cp $(MAC_BUILD)/rbconfig.rb $(RESOURCES)/rbconfig/macos/
+	cp $(IOS_BUILD)/rbconfig.rb $(RESOURCES)/rbconfig/ios/
+	cp $(SIM_BUILD)/rbconfig.rb $(RESOURCES)/rbconfig/ios-simulator/
+	@echo "    $(RESOURCES)"
 
 # ==================================================================== clean
 
 clean:
-	rm -rf $(OUT) $(XCFRAMEWORK)
+	rm -rf $(OUT) $(XCFRAMEWORK) $(RESOURCES)/stdlib $(RESOURCES)/rbconfig
