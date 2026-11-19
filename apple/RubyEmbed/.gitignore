@@ -1,0 +1,5 @@
+# Built by `make -f apple/Makefile xcframework`
+/Ruby-MKXPZ.xcframework/
+# SwiftPM / Xcode local state
+/.build/
+/.swiftpm/

@@ -106,7 +106,9 @@ SIM_CONFIGURE = IPHONEOS_DEPLOYMENT_TARGET=$(IOS_MIN) \
 
 SLICES      := $(OUT)/slices
 SMOKE       := $(OUT)/smoke
-XCFRAMEWORK := $(OUT)/Ruby-MKXPZ.xcframework
+# Written straight into the Swift package (SwiftPM requires a binary target's
+# xcframework to live inside the package folder; gitignored there).
+XCFRAMEWORK := $(APPLE)/RubyEmbed/Ruby-MKXPZ.xcframework
 STDLIB      := $(OUT)/ruby-stdlib
 
 SMOKE_LIBS := -lz -lpthread -ldl -lobjc -framework CoreFoundation
@@ -126,7 +128,7 @@ help:
 	@echo "  stdlib       pure-Ruby stdlib → $(STDLIB)"
 	@echo "  all          xcframework + stdlib (default)"
 	@echo "  macos | ios | sim   build + merge + headers + smoke-test one slice"
-	@echo "  clean        delete build-apple/"
+	@echo "  clean        delete build-apple/ and the package's xcframework"
 	@echo ""
 	@echo "  variables: JOBS=$(JOBS) BASE_RUBY=$(BASE_RUBY)"
 
@@ -264,4 +266,4 @@ stdlib: ruby-macos
 # ==================================================================== clean
 
 clean:
-	rm -rf $(OUT)
+	rm -rf $(OUT) $(XCFRAMEWORK)
