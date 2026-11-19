@@ -3014,9 +3014,11 @@ STATIC=
                         AS_IF([test x"$enable_shared" = xyes], [
                             # Resolve symbols from libruby.dylib when --enable-shared
                             EXTDLDFLAGS='$(LIBRUBYARG_SHARED)'
-                        ], [test "x$EXTSTATIC" = x], [
+                        ], [test "x${with_static_linked_ext:-no}" = xno], [
                             # When building exts as bundles, a mach-o bundle needs to know its loader
                             # program to bind symbols from the ruby executable
+                            # (EXTSTATIC is only assigned further down, so test the option itself:
+                            # EXTSTATIC ends up empty exactly when it is unset or "no")
                             EXTDLDFLAGS="-bundle_loader '\$(BUILTRUBY)'"
 			])
 			rb_cv_dlopen=yes],
