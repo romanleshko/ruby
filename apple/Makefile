@@ -16,8 +16,8 @@
 # keeps in the source tree and also gitignores.
 #
 # Requires: Xcode; autoconf (Homebrew) for autogen.sh; /usr/bin/ruby as the
-# base Ruby of the macOS build; internet on the first build (Ruby's make
-# downloads its bundled gems).
+# base Ruby of the macOS build. No network access: this branch's
+# gems/bundled_gems is empty, so nothing is downloaded.
 #
 # Must stay compatible with Apple's GNU Make 3.81.
 #
@@ -36,13 +36,16 @@
 #     stamps device vs simulator into every object.
 #   - CFLAGS: Ruby 3.1 is not valid C23 → -std=gnu99 on modern clang (mkxp-z's
 #     own recipe), plus ruby-build's standard old-ruby insurance.
-#   - --enable-shared (NOT --disable-shared) works around a genuine Ruby 3.1
-#     bug: configure.ac:3017 guards the darwin "-bundle_loader '$(BUILTRUBY)'"
-#     flag with a check on $EXTSTATIC, but EXTSTATIC is only assigned at ~3250,
-#     so --disable-shared always emits the flag, and BUILTRUBY is defined
-#     nowhere in the 3.1 tree: `ld: -bundle_loader missing <path>` when
-#     build-ext relinks ruby. The static library is still built and installed;
-#     the dylib is a by-product we ignore.
+#   - --disable-shared: only the static library is built. This needs this
+#     branch's configure.ac fix: Ruby 3.1 tested $EXTSTATIC before assigning it,
+#     so a static build always got "-bundle_loader ''" and the ext build failed
+#     with `ld: -bundle_loader missing <path>` (the old workaround was
+#     --enable-shared, which built an unused libruby.dylib).
+#   - No bundled gems (gems/bundled_gems is empty on this branch, like
+#     mkxp-z's): rubygems is disabled and only the core + static exts are
+#     embedded, so they'd be dead weight. Their C extensions (rbs, debug) are
+#     also always built as loadable bundles, which on iOS can only link against
+#     libruby.dylib, i.e. they would break --disable-shared.
 #   - fiddle excluded (libffi dependency, iOS-hostile, unneeded). psych NOT
 #     excluded: the macOS `make install` needs it (rbinstall's default-gem step
 #     loads YAML); free in 3.1 because libyaml is vendored in-tree.
@@ -70,7 +73,7 @@ BASE_RUBY ?= /usr/bin/ruby
 RUBY_CFLAGS := -std=gnu99 -DRUBY_FUNCTION_NAME_STRING=__func__ -Wno-error=implicit-function-declaration
 
 CONFIG_FLAGS := \
-  --enable-shared \
+  --disable-shared \
   --enable-install-static-library \
   --with-static-linked-ext \
   --disable-install-doc \
@@ -86,6 +89,20 @@ SIM_BUILD   := $(OUT)/ios-sim-arm64
 
 CROSS_FLAGS := --host=arm64-apple-darwin --build=aarch64-apple-darwin \
                --with-baseruby=$(MAC_INSTALL)/bin/ruby
+
+# The full configure command per platform, run from its build folder.
+# Recursive (=) on purpose: the $$(xcrun …) parts must reach the shell
+# unexpanded.
+MAC_CONFIGURE = MACOSX_DEPLOYMENT_TARGET=$(MACOS_MIN) CFLAGS="$(RUBY_CFLAGS)" \
+  $(SRC)/configure --prefix=$(MAC_INSTALL) --with-baseruby=$(BASE_RUBY) $(CONFIG_FLAGS)
+
+IOS_CONFIGURE = IPHONEOS_DEPLOYMENT_TARGET=$(IOS_MIN) \
+  CC="$$(xcrun -f clang) -arch arm64 -isysroot $$(xcrun -sdk iphoneos --show-sdk-path) -miphoneos-version-min=$(IOS_MIN)" \
+  CFLAGS="$(RUBY_CFLAGS)" $(SRC)/configure $(CROSS_FLAGS) $(CONFIG_FLAGS)
+
+SIM_CONFIGURE = IPHONEOS_DEPLOYMENT_TARGET=$(IOS_MIN) \
+  CC="$$(xcrun -f clang) -arch arm64 -isysroot $$(xcrun -sdk iphonesimulator --show-sdk-path) -mios-simulator-version-min=$(IOS_MIN)" \
+  CFLAGS="$(RUBY_CFLAGS)" $(SRC)/configure $(CROSS_FLAGS) $(CONFIG_FLAGS)
 
 SLICES      := $(OUT)/slices
 SMOKE       := $(OUT)/smoke
@@ -122,14 +139,29 @@ help:
 $(SRC)/configure: $(SRC)/configure.ac
 	cd $(SRC) && ./autogen.sh --install
 
+# Each build folder records the configure command it was set up with in
+# qp-configure-cmd, rewritten only when the command text changes. A build
+# folder's Makefile depends on it, so changing a flag above re-runs that
+# configure, while an unchanged command leaves the build alone.
+FORCE:
+
+$(MAC_BUILD)/qp-configure-cmd: FORCE
+	@mkdir -p $(@D)
+	@echo '$(MAC_CONFIGURE)' | cmp -s - $@ || echo '$(MAC_CONFIGURE)' > $@
+
+$(IOS_BUILD)/qp-configure-cmd: FORCE
+	@mkdir -p $(@D)
+	@echo '$(IOS_CONFIGURE)' | cmp -s - $@ || echo '$(IOS_CONFIGURE)' > $@
+
+$(SIM_BUILD)/qp-configure-cmd: FORCE
+	@mkdir -p $(@D)
+	@echo '$(SIM_CONFIGURE)' | cmp -s - $@ || echo '$(SIM_CONFIGURE)' > $@
+
 # ============================================================== macOS slice
 
-$(MAC_BUILD)/Makefile: $(SRC)/configure
+$(MAC_BUILD)/Makefile: $(SRC)/configure $(MAC_BUILD)/qp-configure-cmd
 	@echo "==> [macos-arm64] configure"
-	mkdir -p $(MAC_BUILD)
-	cd $(MAC_BUILD) && \
-	  MACOSX_DEPLOYMENT_TARGET=$(MACOS_MIN) CFLAGS="$(RUBY_CFLAGS)" \
-	  $(SRC)/configure --prefix=$(MAC_INSTALL) --with-baseruby=$(BASE_RUBY) $(CONFIG_FLAGS)
+	cd $(MAC_BUILD) && $(MAC_CONFIGURE)
 
 # Always handed to Ruby's make: only it knows its internal dependencies, and
 # it is a quick no-op when nothing changed. Install runs serially, as before.
@@ -158,14 +190,9 @@ macos: ruby-macos
 # The order-only `| ruby-macos` makes sure the base Ruby exists before this
 # configure runs, without forcing a reconfigure every time.
 
-$(IOS_BUILD)/Makefile: $(SRC)/configure | ruby-macos
+$(IOS_BUILD)/Makefile: $(SRC)/configure $(IOS_BUILD)/qp-configure-cmd | ruby-macos
 	@echo "==> [ios-arm64] configure (cross)"
-	mkdir -p $(IOS_BUILD)
-	cd $(IOS_BUILD) && \
-	  IPHONEOS_DEPLOYMENT_TARGET=$(IOS_MIN) \
-	  CC="$$(xcrun -f clang) -arch arm64 -isysroot $$(xcrun -sdk iphoneos --show-sdk-path) -miphoneos-version-min=$(IOS_MIN)" \
-	  CFLAGS="$(RUBY_CFLAGS)" \
-	  $(SRC)/configure $(CROSS_FLAGS) $(CONFIG_FLAGS)
+	cd $(IOS_BUILD) && $(IOS_CONFIGURE)
 
 ruby-ios: ruby-macos $(IOS_BUILD)/Makefile
 	@echo "==> [ios-arm64] make (cross, no install)"
@@ -187,14 +214,9 @@ ios: ruby-ios
 
 # ====================================================== iOS simulator slice
 
-$(SIM_BUILD)/Makefile: $(SRC)/configure | ruby-macos
+$(SIM_BUILD)/Makefile: $(SRC)/configure $(SIM_BUILD)/qp-configure-cmd | ruby-macos
 	@echo "==> [ios-sim-arm64] configure (cross)"
-	mkdir -p $(SIM_BUILD)
-	cd $(SIM_BUILD) && \
-	  IPHONEOS_DEPLOYMENT_TARGET=$(IOS_MIN) \
-	  CC="$$(xcrun -f clang) -arch arm64 -isysroot $$(xcrun -sdk iphonesimulator --show-sdk-path) -mios-simulator-version-min=$(IOS_MIN)" \
-	  CFLAGS="$(RUBY_CFLAGS)" \
-	  $(SRC)/configure $(CROSS_FLAGS) $(CONFIG_FLAGS)
+	cd $(SIM_BUILD) && $(SIM_CONFIGURE)
 
 ruby-sim: ruby-macos $(SIM_BUILD)/Makefile
 	@echo "==> [ios-sim-arm64] make (cross, no install)"
